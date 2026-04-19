@@ -1,0 +1,22 @@
+[
+  {
+    "name": "Google",
+    "careersUrl": "https://www.google.com/about/careers/applications/jobs/results"
+  },
+  {
+    "name": "Microsoft",
+    "careersUrl": "https://apply.careers.microsoft.com/careers?domain=microsoft.com&start=0&pid=1970393556641329&sort_by=timestamp"
+  },
+  {
+    "name": "Amazon",
+    "careersUrl": "https://www.amazon.jobs/content/en-gb/career-programs/university?country%5B%5D=IN"
+  },
+  {
+    "name": "Adobe",
+    "careersUrl": "https://careers.adobe.com/us/en/intern-and-graduate"
+  },
+  {
+    "name": "WellsFargo",
+    "careersUrl": "https://wd1.myworkdaysite.com/recruiting/wf/WellsFargoJobs?locationCountry=c4f78be1a8f14da0ab49ce1162348a5e&jobFamilyGroup=b5c3287c76c20100b318a19542940001"
+  }
+]
