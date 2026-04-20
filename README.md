@@ -7,6 +7,7 @@ A REST API that crawls company career pages using Firecrawl and filters for entr
 - 🕷️ **Web Crawling**: Uses Firecrawl to crawl company career pages
 - 🤖 **AI Filtering**: Leverages Gemini 2.5-flash to filter entry-level software developer jobs
 - ⚡ **Redis Caching**: Upstash Redis caching for improved performance and cost efficiency
+- 🛡️ **Rate Limiting**: Configurable rate limiting (5 requests/min per IP by default)
 - 🏗️ **Modular Architecture**: Loosely coupled services following good design patterns
 - 📊 **JSON API**: Clean REST endpoints returning structured data
 - 🔧 **Extensible**: Easy to add new companies or modify filtering criteria
@@ -152,6 +153,71 @@ REDIS_TOKEN=your-redis-token
 CACHE_EXPIRY_SECONDS=3600  # 1 hour default
 ```
 
+## Rate Limiting
+
+The API implements distributed rate limiting using Redis to prevent abuse and ensure fair usage across all clients.
+
+### Features
+
+- **Per-IP Rate Limiting**: 5 requests per minute by default
+- **Distributed**: Works across multiple instances using Redis
+- **Configurable**: Easy to customize limits per strategy
+- **Extensible**: Support for multiple strategies (IP-based, user-based, API-key-based)
+- **Graceful Handling**: Returns HTTP 429 with retry information
+
+### Configuration
+
+```bash
+RATE_LIMIT_MAX_REQUESTS=5  # Maximum requests per minute
+```
+
+### Rate Limit Response Headers
+
+All API responses include rate limit information:
+
+```
+X-RateLimit-Limit: 5
+X-RateLimit-Remaining: 3
+X-RateLimit-Reset: 1234567890
+```
+
+### Rate Limit Exceeded Response
+
+When rate limit is exceeded, the API returns HTTP 429:
+
+```json
+{
+  "success": false,
+  "error": "Rate limit exceeded",
+  "rateLimit": {
+    "limit": 5,
+    "remaining": 0,
+    "resetIn": 45,
+    "resetAt": "2024-01-01T00:01:45.000Z"
+  }
+}
+```
+
+### Management Endpoints
+
+#### Get Rate Limit Statistics
+
+```http
+GET /rate-limit/stats
+```
+
+#### Reset All Rate Limits
+
+```http
+DELETE /rate-limit/reset
+```
+
+#### Reset Specific Rate Limit
+
+```http
+DELETE /rate-limit/reset/:identifier?strategy=ip
+```
+
 ## Performance Benefits
 
 - **Cost Reduction**: Avoid redundant API calls to Firecrawl and Gemini
@@ -176,14 +242,25 @@ The Gemini AI filters for these entry-level software developer roles:
 - **FirecrawlService**: Handles web crawling operations with caching
 - **GeminiService**: Manages AI filtering and job analysis with caching
 - **CacheService**: Redis-based caching for performance optimization
+- **RateLimitService**: Rate limiting with Redis for distributed systems
 - **Express App**: REST API layer coordinating services
 
 ### Design Principles
 
 - **Single Responsibility**: Each service has one clear purpose
-- **Dependency Injection**: Services are injected with API keys
+- **Dependency Injection**: Services are injected with dependencies
 - **Error Handling**: Comprehensive error handling with fallbacks
 - **Extensibility**: Easy to add new companies or modify filtering logic
+- **Decoupled Architecture**: Services are independent and testable
+- **Strategy Pattern**: Rate limiting supports multiple strategies (IP, user, API-key)
+
+### Design Patterns Used
+
+1. **Service Layer Pattern**: Separation of concerns with dedicated services
+2. **Middleware Pattern**: Express middleware for cross-cutting concerns
+3. **Strategy Pattern**: Rate limiting with pluggable strategies
+4. **Dependency Injection**: Services receive dependencies as parameters
+5. **Factory Pattern**: Middleware factories for flexible configuration
 
 ## File Structure
 
@@ -192,7 +269,10 @@ The Gemini AI filters for these entry-level software developer roles:
 ├── services/
 │   ├── firecrawlService.js   # Firecrawl integration
 │   ├── geminiService.js      # Gemini AI integration
-│   └── cacheService.js       # Redis caching service
+│   ├── cacheService.js       # Redis caching service
+│   └── rateLimitService.js   # Rate limiting service
+├── middleware/
+│   └── rateLimitMiddleware.js # Rate limit middleware
 ├── companies.json           # Company career page URLs
 ├── package.json             # Dependencies and scripts
 ├── .env                     # Environment variables (gitignored)
@@ -227,6 +307,79 @@ Add new routes in `app.js` following the existing pattern.
 
 Update the model name in `GeminiService` constructor (currently using `gemini-1.5-flash`).
 
+### Customizing Rate Limiting
+
+#### Change Rate Limit Per Minute
+
+```javascript
+// In app.js
+app.use(
+  createRateLimitMiddleware(rateLimitService, {
+    strategy: "ip",
+    maxRequests: 10, // Changed from 5 to 10
+  }),
+);
+```
+
+#### Use Different Strategies
+
+```javascript
+// API-Key based limiting
+app.use(
+  createRateLimitMiddleware(rateLimitService, {
+    strategy: "api-key",
+    maxRequests: 100,
+  }),
+);
+
+// User-based limiting
+app.use(
+  createRateLimitMiddleware(rateLimitService, {
+    strategy: "user",
+    maxRequests: 50,
+  }),
+);
+```
+
+#### Custom Identifier Extractor
+
+```javascript
+app.use(
+  createRateLimitMiddleware(rateLimitService, {
+    strategy: "custom",
+    identifierExtractor: (req) => {
+      // Custom logic to extract identifier
+      return req.user?.email || req.ip;
+    },
+    maxRequests: 20,
+  }),
+);
+```
+
+#### Endpoint-Specific Rate Limits
+
+```javascript
+import { createEndpointRateLimitMiddleware } from "./middleware/rateLimitMiddleware.js";
+
+// Stricter limit for crawl endpoint
+app.get(
+  "/crawl/all",
+  createEndpointRateLimitMiddleware(rateLimitService, "crawl_all", 2, "ip"),
+  async (req, res) => {
+    /* ... */
+  },
+);
+
+// Higher limit for health endpoint
+app.get(
+  "/health",
+  createEndpointRateLimitMiddleware(rateLimitService, "health", 100, "ip"),
+  async (req, res) => {
+    /* ... */
+  },
+);
+```
+
 ## Error Handling
 
 The API includes comprehensive error handling:
@@ -234,6 +387,7 @@ The API includes comprehensive error handling:
 - Invalid company names return 404 with available options
 - Service failures return 500 with error details
 - Missing API keys are reported in health checks
+- Rate limit exceeded returns 429 with retry information
 - Gemini parsing errors include fallback responses
 
 ## Rate Limits & Costs

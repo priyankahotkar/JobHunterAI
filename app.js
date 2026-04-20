@@ -5,6 +5,8 @@ import dotenv from 'dotenv';
 import { FirecrawlService } from './services/firecrawlService.js';
 import { GeminiService } from './services/geminiService.js';
 import { CacheService } from './services/cacheService.js';
+import { RateLimitService } from './services/rateLimitService.js';
+import { createRateLimitMiddleware } from './middleware/rateLimitMiddleware.js';
 
 dotenv.config();
 
@@ -18,6 +20,15 @@ const cacheService = new CacheService(
   parseInt(process.env.CACHE_EXPIRY_SECONDS) || 3600
 );
 
+const rateLimitService = new RateLimitService(
+  process.env.REDIS_URL,
+  process.env.REDIS_TOKEN,
+  {
+    windowSizeSeconds: 60,
+    maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 5
+  }
+);
+
 const firecrawlService = new FirecrawlService(process.env.FIRECRAWL_API_KEY, cacheService);
 const geminiService = new GeminiService(process.env.GEMINI_API_KEY, cacheService);
 
@@ -27,6 +38,15 @@ const companies = JSON.parse(fs.readFileSync(companiesPath, 'utf8'));
 
 // Middleware
 app.use(express.json());
+
+// Rate limiting middleware (applied only to main API endpoints)
+const rateLimitMiddleware = createRateLimitMiddleware(rateLimitService, {
+  strategy: 'ip',
+  maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 5
+});
+
+// Apply rate limiting only to crawl endpoints
+app.use('/crawl', rateLimitMiddleware);
 
 // GET endpoint to crawl all companies and filter entry-level jobs
 app.get('/crawl/all', async (req, res) => {
@@ -125,6 +145,8 @@ app.get('/companies', (req, res) => {
 app.get('/health', async (req, res) => {
   const cacheHealthy = await cacheService.isHealthy();
   const cacheStats = await cacheService.getStats();
+  const rateLimitHealthy = await rateLimitService.isHealthy();
+  const rateLimitStats = await rateLimitService.getStats();
 
   res.json({
     success: true,
@@ -137,6 +159,11 @@ app.get('/health', async (req, res) => {
     cache: {
       healthy: cacheHealthy,
       stats: cacheStats
+    },
+    rateLimit: {
+      healthy: rateLimitHealthy,
+      maxRequestsPerMinute: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 5,
+      stats: rateLimitStats
     },
     timestamp: new Date().toISOString()
   });
@@ -192,6 +219,61 @@ app.delete('/cache/:companyName', async (req, res) => {
   }
 });
 
+// Rate limit management endpoints
+app.get('/rate-limit/stats', async (req, res) => {
+  try {
+    const stats = await rateLimitService.getStats();
+    res.json({
+      success: true,
+      message: 'Rate limit statistics',
+      config: {
+        maxRequestsPerMinute: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 5,
+        windowSizeSeconds: 60
+      },
+      stats: stats,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.delete('/rate-limit/reset', async (req, res) => {
+  try {
+    const cleared = await rateLimitService.resetAllLimits();
+    res.json({
+      success: cleared,
+      message: 'All rate limits reset',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.delete('/rate-limit/reset/:identifier', async (req, res) => {
+  try {
+    const strategy = req.query.strategy || 'ip';
+    const cleared = await rateLimitService.resetLimit(strategy, req.params.identifier);
+    res.json({
+      success: cleared,
+      message: `Rate limit reset for ${strategy}:${req.params.identifier}`,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Error handling middleware
 app.use((error, req, res, next) => {
   console.error('Unhandled error:', error);
@@ -208,14 +290,11 @@ app.listen(PORT, () => {
   console.log(`  GET /companies - List all companies`);
   console.log(`  GET /crawl/all - Crawl all companies and filter entry-level jobs`);
   console.log(`  GET /crawl/:companyName - Crawl specific company and filter jobs`);
-  console.log(`  GET /crawl-raw/:companyName - Crawl specific company (raw data)`);  console.log(`  DELETE /cache - Clear all cached data`);
-  console.log(`  DELETE /cache/:companyName - Clear cache for specific company`);});
-
-app.listen(PORT, () => {
-  console.log(`Firecrawl Web Scraper API running on http://localhost:${PORT}`);
-  console.log(`Available endpoints:`);
-  console.log(`  GET /health - Health check`);
-  console.log(`  GET /companies - List all companies`);
-  console.log(`  GET /crawl/all - Crawl all company career pages`);
-  console.log(`  GET /crawl/:companyName - Crawl specific company (e.g., /crawl/Google)`);
+  console.log(`  GET /crawl-raw/:companyName - Crawl specific company (raw data)`);
+  console.log(`  DELETE /cache - Clear all cached data`);
+  console.log(`  DELETE /cache/:companyName - Clear cache for specific company`);
+  console.log(`  GET /rate-limit/stats - Get rate limit statistics`);
+  console.log(`  DELETE /rate-limit/reset - Reset all rate limits`);
+  console.log(`  DELETE /rate-limit/reset/:identifier - Reset rate limit for identifier`);
+  console.log(`Rate Limiting: ${parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 5} requests per minute per IP`);
 });
